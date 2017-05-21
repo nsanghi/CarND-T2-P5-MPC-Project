@@ -1,6 +1,96 @@
 # CarND-Controls-MPC
 Self-Driving Car Engineer Nanodegree Program
 
+## Implementation Details
+
+In this project we use a Model Predictive Control to drive a car around a track in Udacity provided
+Simulator. A video of final outcome is given [here](run_60mph.mp4) or [here](https://youtu.be/E5w7pAwYNqY)
+
+Car modelled using a kinematic model as explained in the lectures.
+
+#### The Model:
+
+state: [x, y, psi, v, cte, epsi]  
+where:  
+cte = cross track error  
+epsi = error in psi
+
+actuator: [delta, a]  
+where:  
+delta = steering angle  
+a = throttle value
+
+The state equations are given as  
+`x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt`  
+`y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt`  
+`psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt`  
+`v_[t+1] = v[t] + a[t] * dt`  
+`cte[t+1] = f(x[t]) - y[t] + v[t] * sin(epsi[t]) * dt`  
+`epsi[t+1] = psi[t] - psides[t] + v[t] * delta[t] / Lf * dt`  
+
+Simulator provides these values at time instance t. Simulator also provides the middle of road as a list of 6 points(px,py) in world coordinate frame. We have to use a MPC control to predict the new `delta` and `a` and pass it back to simulator to drive the car.
+
+The pipleline I follow is:  
+a) Convert trajectory points to car frame by doing a shift followed by rotation.  
+b) Fit a degree-3 polynomial to find the coefficients.  
+c) convert the state to future state after 100 milliseconds to account for the latency.  
+d) pass along the state (with latency factored in) and car-coord trajectory coefficients to MPC solver to solve.  
+e) Get back the projected trajectory alongwith actuator values (i.e. delta-steering angle and a - throttle value).  
+f) Pass the actuator values and projeccted trajectory to simulator which paints the projected trajectory in green color and also uses the actutator values to control the car movement.   
+g) Wait for arriaval of next telemetary event from simulator and then start the process all over again from a)   
+
+#### MPC Explanation
+
+* As explained in lectures, I first coded the MPC cost function which the solver minimizes. First squared error of cte, epsi and the differnce of current speed vs desired speed (60 mph in my case) is added.
+
+* Following the explanations in lectures, the sqaure of actuator values (delta, a) is added. Also added is the squared difference between two subsequent timestamp actuator values to ensure that sudden and drastic changes get punished. For steering change, I use a multipler of 1000 as given below:  
+`fg[0] += 1000 * CppAD::pow(vars[delta_start + i + 1] - vars[delta_start + i], 2);`  
+First I had used a multiple of 100 then 500, finally settled for 1000 to severly punish sudden large steering angle changes.
+
+* I then add the constraints as explained in lectures and the mpc quiz, keeping in mind that mpc quiz was using a degree-1 polynomial while for the project, we were required to use degree-3 polynomial.
+
+* MPC has two parameters, N = number of timestamps in future and dt = time elapse in seconds between two actuations. First I started with the value of N = 25, and dt = 0.05 just as the mpc quiz. However, it did not workout (could have been due to other bugs in code). So I redcued reference speed to 30 mph and increased N to 50 to get a longer smoother line. At slow speed it gave good results. However as I started increasing speed, N=50 at high speeds started having problem fitting a smooth degree-3 polynomial especially around curves. I also felt that 0.05 is too small for the car and threafter kept dt around 0.1 while reducing N. At a reference speed of 50, N=10 with dt=0.1 performed well. However, in order to push the speed to 60 mph, i found N=7 and dt=0.09 as acceptable.  
+
+#### Telemetary data pre-processing
+
+* Telemetary data provided by emulator are in world coordiates. In order to show the trajectory points on simulator, all the trajectory points are converted from world to car-frame coordinates. The code lines doing that in `main.cpp` are:  
+  ```
+// convert to car coordiate system
+Eigen::VectorXd car_ptsx = Eigen::VectorXd(ptsx.size());
+Eigen::VectorXd car_ptsy = Eigen::VectorXd(ptsx.size());
+double x, y;
+for(int i = 0; i < ptsx.size(); i++) {
+  x = ptsx[i] - px;
+  y = ptsy[i] - py;
+  car_ptsx(i) = x * cos(psi) + y * sin(psi);
+  car_ptsy(i) = -x * sin(psi) + y * cos(psi);
+}```
+
+* These data points are then fitted using a degree-3 polynomial. The coefficients of the fitted polynomial are one of the inputs to MPC solver.
+
+* Latency: There's a 100 millisecond latency between actuations commands. So in order to account for it, I take the current state from telemetary data and project the current state in car-coordinates to a future timestamp using the kinematic model as expalined above in **Model** section above. In car-cordinates current state has: px = 0, py=0, psi =0 and v= data from telemetary.  
+
+  The equations for new state with latency are:  
+
+    ```
+    double lat_x = 0.0+v*0.1;
+    double lat_y = 0.0;
+    double lat_psi = 0.0;
+    double lat_cte = polyeval(coeffs, 0) - 0;
+    double lat_epsi = lat_psi -atan(coeffs[1] + 2 * coeffs[2] * lat_x + 3 * coeffs[3] * lat_x * lat_x);
+    ```  
+    I had also tried to modify  `lat_psi ` using below equations but it made outcome worse.  
+    ```
+    double lat_y = 0.0;
+    // psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
+    double lat_psi = v/Lf*delta*0.1;
+    double lat_cte = polyeval(coeffs, lat_x) - lat_y;
+    ```
+    * The modified state along with coefficients of map trajectory is then fed into MPC solver which returns the actuator values and projected trajectory points which are passed along to emulator.
+
+
+
+
 ---
 
 ## Dependencies
@@ -22,7 +112,7 @@ Self-Driving Car Engineer Nanodegree Program
   * Mac: `brew install ipopt --with-openblas`
   * Linux
     * You will need a version of Ipopt 3.12.1 or higher. The version available through `apt-get` is 3.11.x. If you can get that version to work great but if not there's a script `install_ipopt.sh` that will install Ipopt. You just need to download the source from the Ipopt [releases page](https://www.coin-or.org/download/source/Ipopt/) or the [Github releases](https://github.com/coin-or/Ipopt/releases) page.
-    * Then call `install_ipopt.sh` with the source directory as the first argument, ex: `bash install_ipopt.sh Ipopt-3.12.1`. 
+    * Then call `install_ipopt.sh` with the source directory as the first argument, ex: `bash install_ipopt.sh Ipopt-3.12.1`.
   * Windows: TODO. If you can use the Linux subsystem and follow the Linux instructions.
 * [CppAD](https://www.coin-or.org/CppAD/)
   * Mac: `brew install cppad`
