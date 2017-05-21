@@ -86,7 +86,7 @@ for(int i = 0; i < ptsx.size(); i++) {
     double lat_psi = v/Lf*delta*0.1;
     double lat_cte = polyeval(coeffs, lat_x) - lat_y;
     ```
-    * The modified state along with coefficients of map trajectory is then fed into MPC solver which returns the actuator values and projected trajectory points which are passed along to emulator.
+* The modified state along with coefficients of map trajectory is then fed into MPC solver which returns the actuator values and projected trajectory points which are passed along to emulator.
 
 
 
